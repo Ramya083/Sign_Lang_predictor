@@ -1,6 +1,7 @@
 {
   "name": "ASL Sign Language Translator",
   "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgl1",
   "postCreateCommand": "bash setup.sh",
   "forwardPorts": [8501],
   "portsAttributes": {

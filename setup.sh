@@ -3,7 +3,13 @@ set -e
 
 echo "== Installing system dependencies =="
 sudo apt-get update -qq
-sudo apt-get install -y -qq libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev
+sudo apt-get install -y -qq \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgl1
 
 echo "== Installing Python packages =="
 pip install -q -r req.txt
