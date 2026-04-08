@@ -141,3 +141,7 @@ Thumbs.db
 
 # Model files (if large)
 # model/*.pkl
+
+# Downloaded binaries
+*.zip
+ngrok*

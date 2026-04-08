@@ -4,10 +4,17 @@ Run: streamlit run app.py
 """
 
 import streamlit as st
-import cv2
 import numpy as np
 from PIL import Image
 import os
+import sys
+import subprocess
+import threading
+import time
+
+# Fix import path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BASE_DIR)
 
 st.set_page_config(
     page_title="ASL Sign Language Translator",
@@ -61,8 +68,8 @@ html, body, [class*="css"] { font-family: 'Space Grotesk', sans-serif; }
     border-radius: 20px; padding: 3px 12px; font-size: 0.8rem; color: #e94560;
     font-family: 'JetBrains Mono', monospace;
 }
-.status-ok   { color: #4ade80; font-weight: 600; }
-.status-err  { color: #f87171; font-weight: 600; }
+.status-ok  { color: #4ade80; font-weight: 600; }
+.status-err { color: #f87171; font-weight: 600; }
 .tip-box {
     background: rgba(255,255,255,0.04); border-left: 3px solid #e94560;
     border-radius: 0 8px 8px 0; padding: 0.75rem 1rem;
@@ -84,7 +91,8 @@ section[data-testid="stSidebar"] {
 @st.cache_resource
 def load_predictor():
     from utils.predictor import ASLPredictor
-    return ASLPredictor("model/asl_classifier.pkl")
+    model_path = os.path.join(BASE_DIR, "model", "asl_classifier.pkl")
+    return ASLPredictor(model_path)
 
 @st.cache_resource
 def load_hand_detector():
@@ -92,7 +100,7 @@ def load_hand_detector():
     return get_hands_detector(static_mode=True)
 
 
-model_ready = os.path.exists("model/asl_classifier.pkl")
+model_ready = os.path.exists(os.path.join(BASE_DIR, "model", "asl_classifier.pkl"))
 
 st.markdown("""
 <div class="main-header">
@@ -122,21 +130,42 @@ with st.sidebar:
     if st.button("Start ngrok tunnel"):
         if ngrok_token:
             try:
-                from pyngrok import ngrok, conf
-                conf.get_default().auth_token = ngrok_token
-                tunnel = ngrok.connect(8501)
-                st.success(f"Public URL:\n{tunnel.public_url}")
-                st.session_state["ngrok_url"] = tunnel.public_url
+                # Use system ngrok binary instead of pyngrok
+                subprocess.run(
+                    ["ngrok", "config", "add-authtoken", ngrok_token],
+                    check=True, capture_output=True
+                )
+
+                def run_ngrok():
+                    subprocess.Popen(
+                        ["ngrok", "http", "8501", "--log=stdout"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+
+                threading.Thread(target=run_ngrok, daemon=True).start()
+                time.sleep(3)
+
+                import requests
+                res     = requests.get("http://localhost:4040/api/tunnels", timeout=5)
+                tunnels = res.json()["tunnels"]
+                public_url = tunnels[0]["public_url"]
+
+                st.success(f"Public URL:\n{public_url}")
+                st.session_state["ngrok_url"] = public_url
+
             except Exception as e:
                 st.error(f"ngrok error: {e}")
         else:
             st.warning("Enter your ngrok authtoken first.")
+
     if "ngrok_url" in st.session_state:
         st.info(f"🌐 Live at:\n{st.session_state['ngrok_url']}")
 
 
 if not model_ready:
-    st.error("⚠️ Model not found. Run:  `python train_model.py`  then restart the app.")
+    st.error("⚠️ Model not found. Run this in the terminal first:")
+    st.code("python train_model.py")
     st.stop()
 
 predictor = load_predictor()
@@ -151,12 +180,19 @@ col_left, col_right = st.columns([3, 2], gap="large")
 
 with col_left:
     st.markdown("### 📷 Input")
-    input_mode = st.radio("Input mode", ["Upload Image", "Webcam Snapshot"], horizontal=True, label_visibility="collapsed")
+    input_mode = st.radio(
+        "Input mode", ["Upload Image", "Webcam Snapshot"],
+        horizontal=True, label_visibility="collapsed"
+    )
 
     uploaded_image = None
 
     if input_mode == "Upload Image":
-        f = st.file_uploader("Upload hand sign image", type=["jpg","jpeg","png","webp"], label_visibility="collapsed")
+        f = st.file_uploader(
+            "Upload hand sign image",
+            type=["jpg", "jpeg", "png", "webp"],
+            label_visibility="collapsed"
+        )
         if f:
             uploaded_image = np.array(Image.open(f).convert("RGB"))
     else:
@@ -168,19 +204,29 @@ with col_left:
         from utils.hand_utils import extract_landmarks, normalize_landmarks
 
         landmarks, annotated, detected = extract_landmarks(uploaded_image, hands)
-        st.image(annotated, caption="Detected hand landmarks" if detected else "No hand detected", use_container_width=True)
+
+        # Fixed: use_column_width instead of use_container_width
+        st.image(
+            annotated,
+            caption="Detected hand landmarks" if detected else "No hand detected",
+            use_column_width=True
+        )
 
         if not detected:
-            st.markdown('<p class="status-err">✗ No hand detected. Try better lighting or a plain background.</p>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="status-err">✗ No hand detected. Try better lighting or a plain background.</p>',
+                unsafe_allow_html=True
+            )
         else:
             st.markdown('<p class="status-ok">✓ Hand detected successfully</p>', unsafe_allow_html=True)
+
             norm_lm = normalize_landmarks(landmarks)
             label, confidence, top3 = predictor.predict(norm_lm)
 
             with col_right:
                 st.markdown("### 🔤 Prediction")
-                conf_pct     = round(confidence * 100, 1)
-                conf_color   = "#4ade80" if confidence >= confidence_threshold else "#fbbf24"
+                conf_pct      = round(confidence * 100, 1)
+                conf_color    = "#4ade80" if confidence >= confidence_threshold else "#fbbf24"
                 display_label = label if confidence >= confidence_threshold else "?"
 
                 st.markdown(f"""
@@ -218,7 +264,10 @@ with col_left:
 
                 st.markdown("---")
                 st.markdown("### 💬 Sentence")
-                st.markdown(f'<div class="sentence-box">{st.session_state.sentence or "..."}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="sentence-box">{st.session_state.sentence or "..."}</div>',
+                    unsafe_allow_html=True
+                )
 
                 if st.session_state.history:
                     st.markdown(f"**History:** `{'` → `'.join(st.session_state.history[-10:])}`")
@@ -226,11 +275,18 @@ with col_left:
     else:
         with col_right:
             st.markdown("### 🔤 Prediction")
-            st.markdown('<div class="pred-card"><div class="pred-letter" style="opacity:0.3">—</div><div class="pred-conf">Waiting for input…</div></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="pred-card"><div class="pred-letter" style="opacity:0.3">—</div>'
+                '<div class="pred-conf">Waiting for input…</div></div>',
+                unsafe_allow_html=True
+            )
             st.markdown("### 💬 Sentence")
-            st.markdown(f'<div class="sentence-box">{st.session_state.sentence or "..."}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="sentence-box">{st.session_state.sentence or "..."}</div>',
+                unsafe_allow_html=True
+            )
 
-
+# ── ASL Reference Chart ────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown("### 🗂 ASL Alphabet Reference")
 labels = list("ABCDEFGHIKLMNOPQRSTUVWXY") + ["del", "nothing", "space"]
@@ -238,11 +294,16 @@ cols   = st.columns(9)
 for i, letter in enumerate(labels):
     with cols[i % 9]:
         st.markdown(
-            f'<div style="background:#1a1a2e;border:1px solid rgba(255,255,255,0.1);border-radius:8px;'
-            f'padding:8px 4px;text-align:center;color:white;font-weight:600;font-size:0.9rem;'
-            f'margin-bottom:6px;font-family:monospace;">{letter}</div>',
+            f'<div style="background:#1a1a2e;border:1px solid rgba(255,255,255,0.1);'
+            f'border-radius:8px;padding:8px 4px;text-align:center;color:white;'
+            f'font-weight:600;font-size:0.9rem;margin-bottom:6px;font-family:monospace;">'
+            f'{letter}</div>',
             unsafe_allow_html=True
         )
 
 st.markdown("---")
-st.markdown('<div style="text-align:center;color:rgba(255,255,255,0.3);font-size:0.8rem;padding:1rem 0;">Built with MediaPipe · scikit-learn · Streamlit</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="text-align:center;color:rgba(255,255,255,0.3);font-size:0.8rem;padding:1rem 0;">'
+    'Built with MediaPipe · scikit-learn · Streamlit</div>',
+    unsafe_allow_html=True
+)
